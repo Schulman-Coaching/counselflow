@@ -3,7 +3,7 @@
  * Handles Gmail and Outlook OAuth flows and email operations
  */
 
-import * as db from "./db";
+import * as db from "../db";
 
 // OAuth configuration - from environment variables
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID || "";

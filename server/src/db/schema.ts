@@ -206,6 +206,43 @@ export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = typeof invoices.$inferInsert;
 
 /**
+ * Payments - tracks individual payment records
+ */
+export const payments = mysqlTable("payments", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  invoiceId: int("invoiceId").notNull(),
+  amount: int("amount").notNull(), // in cents
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "check", "credit_card", "bank_transfer", "other"]).default("other").notNull(),
+  referenceNumber: varchar("referenceNumber", { length: 100 }),
+  notes: text("notes"),
+  paymentDate: timestamp("paymentDate").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Payment = typeof payments.$inferSelect;
+export type InsertPayment = typeof payments.$inferInsert;
+
+/**
+ * Payment Reminders - stores scheduled payment reminder notifications
+ */
+export const paymentReminders = mysqlTable("paymentReminders", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  invoiceId: int("invoiceId").notNull(),
+  reminderDate: timestamp("reminderDate").notNull(),
+  reminderType: mysqlEnum("reminderType", ["upcoming", "due", "overdue", "custom"]).default("upcoming").notNull(),
+  message: text("message"),
+  isSent: boolean("isSent").default(false).notNull(),
+  sentAt: timestamp("sentAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PaymentReminder = typeof paymentReminders.$inferSelect;
+export type InsertPaymentReminder = typeof paymentReminders.$inferInsert;
+
+/**
  * Deadlines - tracks important dates and deadlines
  */
 export const deadlines = mysqlTable("deadlines", {

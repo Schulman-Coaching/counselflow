@@ -7,11 +7,11 @@
     "strict": true,
     "skipLibCheck": true,
     "outDir": "./dist",
-    "rootDir": "./src",
     "baseUrl": "..",
     "paths": {
       "@shared/*": ["./shared/*"]
-    }
+    },
+    "noEmit": true
   },
   "include": ["src/**/*", "../shared/**/*"]
 }

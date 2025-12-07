@@ -559,6 +559,67 @@ export const appRouter = router({
         
         return { success: true };
       }),
+
+    exportPDF: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const { generateDocumentPDF } = await import("./services/pdfGenerator");
+        const { storagePut } = await import("./storage");
+
+        // Get document with related data
+        const document = await db.getDocumentById(input.id);
+        if (!document) {
+          throw new Error("Document not found");
+        }
+
+        // Get matter and client info if available
+        let matterTitle: string | undefined;
+        let clientName: string | undefined;
+
+        if (document.matterId) {
+          const matter = await db.getMatterById(document.matterId);
+          if (matter) {
+            matterTitle = matter.title;
+            const client = await db.getClientById(matter.clientId);
+            if (client) {
+              clientName = client.name;
+            }
+          }
+        }
+
+        // Prepare document data for PDF generation
+        const documentData = {
+          title: document.title,
+          content: document.content || "",
+          status: document.status || "draft",
+          version: document.version || 1,
+          matterTitle,
+          clientName,
+          lawyerName: ctx.user.name || "Attorney",
+          createdAt: document.createdAt,
+        };
+
+        // Generate PDF
+        const pdfBuffer = await generateDocumentPDF(documentData);
+
+        // Upload to storage
+        const fileName = `document-${document.title.replace(/[^a-zA-Z0-9]/g, '_')}-${Date.now()}.pdf`;
+        const { url } = await storagePut(
+          `documents/${ctx.user.id}/${fileName}`,
+          pdfBuffer,
+          "application/pdf"
+        );
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "document",
+          entityId: document.id,
+          action: "exported_pdf",
+          details: JSON.stringify({ fileName, url }),
+        });
+
+        return { url, fileName };
+      }),
   }),
 
   // ============ Document Templates ============
@@ -593,8 +654,56 @@ export const appRouter = router({
           questionnaireSchema: input.questionnaireSchema,
           isPublic: false,
         });
-        
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "template",
+          entityId: templateId,
+          action: "created",
+          details: JSON.stringify({ name: input.name, category: input.category }),
+        });
+
         return { id: templateId };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().optional(),
+        description: z.string().optional(),
+        category: z.string().optional(),
+        state: z.string().optional(),
+        templateContent: z.string().optional(),
+        questionnaireSchema: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { id, ...updates } = input;
+        await db.updateDocumentTemplate(id, updates);
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "template",
+          entityId: id,
+          action: "updated",
+          details: JSON.stringify(updates),
+        });
+
+        return { success: true };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await db.deleteDocumentTemplate(input.id);
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "template",
+          entityId: input.id,
+          action: "deleted",
+        });
+
+        return { success: true };
       }),
   }),
 
@@ -818,7 +927,7 @@ export const appRouter = router({
     exportPDF: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const { generateInvoicePDF } = await import("./pdfGenerator");
+        const { generateInvoicePDF } = await import("./services/pdfGenerator");
         const { storagePut } = await import("./storage");
         
         // Get invoice with all related data
@@ -869,6 +978,234 @@ export const appRouter = router({
         });
         
         return { url, fileName };
+      }),
+  }),
+
+  // ============ Payments ============
+  payments: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getPaymentsByUserId(ctx.user.id);
+    }),
+
+    getByInvoice: protectedProcedure
+      .input(z.object({ invoiceId: z.number() }))
+      .query(async ({ input }) => {
+        return await db.getPaymentsByInvoiceId(input.invoiceId);
+      }),
+
+    get: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return await db.getPaymentById(input.id);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        invoiceId: z.number(),
+        amount: z.number(),
+        paymentMethod: z.enum(["cash", "check", "credit_card", "bank_transfer", "other"]),
+        referenceNumber: z.string().optional(),
+        notes: z.string().optional(),
+        paymentDate: z.date().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        // Verify invoice exists and belongs to user
+        const invoice = await db.getInvoiceById(input.invoiceId);
+        if (!invoice || invoice.userId !== ctx.user.id) {
+          throw new Error("Invoice not found");
+        }
+
+        const paymentId = await db.createPayment({
+          userId: ctx.user.id,
+          invoiceId: input.invoiceId,
+          amount: input.amount,
+          paymentMethod: input.paymentMethod,
+          referenceNumber: input.referenceNumber,
+          notes: input.notes,
+          paymentDate: input.paymentDate || new Date(),
+        });
+
+        // Check if invoice is fully paid
+        const totalPayments = await db.getTotalPaymentsByInvoiceId(input.invoiceId);
+        if (totalPayments >= invoice.totalAmount) {
+          await db.updateInvoice(input.invoiceId, {
+            status: "paid",
+            paidDate: new Date()
+          });
+        }
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "payment",
+          entityId: paymentId,
+          action: "created",
+          details: JSON.stringify({ invoiceId: input.invoiceId, amount: input.amount }),
+        });
+
+        return { id: paymentId };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const payment = await db.getPaymentById(input.id);
+        if (!payment || payment.userId !== ctx.user.id) {
+          throw new Error("Payment not found");
+        }
+
+        await db.deletePayment(input.id);
+
+        // Re-check invoice status after payment deletion
+        const totalPayments = await db.getTotalPaymentsByInvoiceId(payment.invoiceId);
+        const invoice = await db.getInvoiceById(payment.invoiceId);
+        if (invoice && totalPayments < invoice.totalAmount && invoice.status === "paid") {
+          await db.updateInvoice(payment.invoiceId, { status: "sent", paidDate: null });
+        }
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "payment",
+          entityId: input.id,
+          action: "deleted",
+        });
+
+        return { success: true };
+      }),
+
+    getInvoiceBalance: protectedProcedure
+      .input(z.object({ invoiceId: z.number() }))
+      .query(async ({ input }) => {
+        const invoice = await db.getInvoiceById(input.invoiceId);
+        if (!invoice) {
+          throw new Error("Invoice not found");
+        }
+        const totalPayments = await db.getTotalPaymentsByInvoiceId(input.invoiceId);
+        return {
+          totalAmount: invoice.totalAmount,
+          totalPaid: totalPayments,
+          balance: invoice.totalAmount - totalPayments,
+        };
+      }),
+  }),
+
+  // ============ Payment Reminders ============
+  paymentReminders: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getPendingPaymentReminders(ctx.user.id);
+    }),
+
+    getByInvoice: protectedProcedure
+      .input(z.object({ invoiceId: z.number() }))
+      .query(async ({ input }) => {
+        return await db.getPaymentRemindersByInvoiceId(input.invoiceId);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        invoiceId: z.number(),
+        reminderDate: z.date(),
+        reminderType: z.enum(["upcoming", "due", "overdue", "custom"]),
+        message: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const reminderId = await db.createPaymentReminder({
+          userId: ctx.user.id,
+          invoiceId: input.invoiceId,
+          reminderDate: input.reminderDate,
+          reminderType: input.reminderType,
+          message: input.message,
+        });
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "paymentReminder",
+          entityId: reminderId,
+          action: "created",
+          details: JSON.stringify({ invoiceId: input.invoiceId, reminderDate: input.reminderDate }),
+        });
+
+        return { id: reminderId };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await db.deletePaymentReminder(input.id);
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "paymentReminder",
+          entityId: input.id,
+          action: "deleted",
+        });
+
+        return { success: true };
+      }),
+
+    markAsSent: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await db.markReminderAsSent(input.id);
+        return { success: true };
+      }),
+
+    getOverdueInvoices: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getOverdueInvoices(ctx.user.id);
+    }),
+
+    // Auto-create reminders for an invoice based on due date
+    autoCreateReminders: protectedProcedure
+      .input(z.object({ invoiceId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const invoice = await db.getInvoiceById(input.invoiceId);
+        if (!invoice || !invoice.dueDate) {
+          throw new Error("Invoice not found or has no due date");
+        }
+
+        const dueDate = new Date(invoice.dueDate);
+        const reminders: Array<{ date: Date; type: "upcoming" | "due" | "overdue" }> = [];
+
+        // 7 days before due
+        const sevenDaysBefore = new Date(dueDate);
+        sevenDaysBefore.setDate(sevenDaysBefore.getDate() - 7);
+        if (sevenDaysBefore > new Date()) {
+          reminders.push({ date: sevenDaysBefore, type: "upcoming" });
+        }
+
+        // 3 days before due
+        const threeDaysBefore = new Date(dueDate);
+        threeDaysBefore.setDate(threeDaysBefore.getDate() - 3);
+        if (threeDaysBefore > new Date()) {
+          reminders.push({ date: threeDaysBefore, type: "upcoming" });
+        }
+
+        // On due date
+        if (dueDate > new Date()) {
+          reminders.push({ date: dueDate, type: "due" });
+        }
+
+        // 3 days after due
+        const threeDaysAfter = new Date(dueDate);
+        threeDaysAfter.setDate(threeDaysAfter.getDate() + 3);
+        reminders.push({ date: threeDaysAfter, type: "overdue" });
+
+        // 7 days after due
+        const sevenDaysAfter = new Date(dueDate);
+        sevenDaysAfter.setDate(sevenDaysAfter.getDate() + 7);
+        reminders.push({ date: sevenDaysAfter, type: "overdue" });
+
+        const createdIds: number[] = [];
+        for (const reminder of reminders) {
+          const id = await db.createPaymentReminder({
+            userId: ctx.user.id,
+            invoiceId: input.invoiceId,
+            reminderDate: reminder.date,
+            reminderType: reminder.type,
+          });
+          createdIds.push(id);
+        }
+
+        return { created: createdIds.length, ids: createdIds };
       }),
   }),
 
@@ -1297,7 +1634,7 @@ export const appRouter = router({
 
     // Get OAuth URL for Google
     getAuthUrl: protectedProcedure.query(async () => {
-      const { getGoogleAuthUrl } = await import("./calendarService");
+      const { getGoogleAuthUrl } = await import("./services/calendarService");
       return { url: getGoogleAuthUrl() };
     }),
 
@@ -1305,7 +1642,7 @@ export const appRouter = router({
     handleCallback: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const { exchangeCodeForTokens } = await import("./calendarService");
+        const { exchangeCodeForTokens } = await import("./services/calendarService");
 
         const tokens = await exchangeCodeForTokens(input.code);
         const tokenExpiry = new Date(Date.now() + tokens.expires_in * 1000);
@@ -1334,7 +1671,7 @@ export const appRouter = router({
 
     // List available calendars
     listCalendars: protectedProcedure.query(async ({ ctx }) => {
-      const { listCalendars } = await import("./calendarService");
+      const { listCalendars } = await import("./services/calendarService");
       return await listCalendars(ctx.user.id);
     }),
 
@@ -1352,7 +1689,7 @@ export const appRouter = router({
 
     // Disconnect calendar
     disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-      const { disconnectCalendar } = await import("./calendarService");
+      const { disconnectCalendar } = await import("./services/calendarService");
       await disconnectCalendar(ctx.user.id);
 
       await db.logActivity({
@@ -1370,7 +1707,7 @@ export const appRouter = router({
     syncDeadline: protectedProcedure
       .input(z.object({ deadlineId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const { syncDeadlineToCalendar } = await import("./calendarService");
+        const { syncDeadlineToCalendar } = await import("./services/calendarService");
         const deadline = await db.getDeadlinesByMatterId(input.deadlineId);
 
         // Get the deadline from the list (simplified - in real app would have getDeadlineById)
@@ -1394,7 +1731,7 @@ export const appRouter = router({
     syncTask: protectedProcedure
       .input(z.object({ taskId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const { syncTaskToCalendar } = await import("./calendarService");
+        const { syncTaskToCalendar } = await import("./services/calendarService");
         const task = await db.getTaskById(input.taskId);
 
         if (!task) {
@@ -1424,7 +1761,7 @@ export const appRouter = router({
         entityId: z.number(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const { removeSyncedEvent } = await import("./calendarService");
+        const { removeSyncedEvent } = await import("./services/calendarService");
         await removeSyncedEvent(ctx.user.id, input.entityType, input.entityId);
         return { success: true };
       }),
@@ -1454,13 +1791,13 @@ export const appRouter = router({
 
     // Get Gmail OAuth URL
     getGmailAuthUrl: protectedProcedure.query(async () => {
-      const { getGmailAuthUrl } = await import("./emailService");
+      const { getGmailAuthUrl } = await import("./services/emailService");
       return { url: getGmailAuthUrl() };
     }),
 
     // Get Outlook OAuth URL
     getOutlookAuthUrl: protectedProcedure.query(async () => {
-      const { getOutlookAuthUrl } = await import("./emailService");
+      const { getOutlookAuthUrl } = await import("./services/emailService");
       return { url: getOutlookAuthUrl() };
     }),
 
@@ -1468,7 +1805,7 @@ export const appRouter = router({
     handleGmailCallback: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const { exchangeGmailCode, getGmailUserEmail } = await import("./emailService");
+        const { exchangeGmailCode, getGmailUserEmail } = await import("./services/emailService");
 
         const tokens = await exchangeGmailCode(input.code);
         const email = await getGmailUserEmail(tokens.access_token);
@@ -1501,7 +1838,7 @@ export const appRouter = router({
     handleOutlookCallback: protectedProcedure
       .input(z.object({ code: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const { exchangeOutlookCode, getOutlookUserEmail } = await import("./emailService");
+        const { exchangeOutlookCode, getOutlookUserEmail } = await import("./services/emailService");
 
         const tokens = await exchangeOutlookCode(input.code);
         const email = await getOutlookUserEmail(tokens.access_token);
@@ -1543,7 +1880,7 @@ export const appRouter = router({
 
     // Disconnect email
     disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-      const { disconnectEmail } = await import("./emailService");
+      const { disconnectEmail } = await import("./services/emailService");
       await disconnectEmail(ctx.user.id);
 
       await db.logActivity({
@@ -1559,7 +1896,7 @@ export const appRouter = router({
 
     // Sync emails
     sync: protectedProcedure.mutation(async ({ ctx }) => {
-      const { syncEmails } = await import("./emailService");
+      const { syncEmails } = await import("./services/emailService");
       const result = await syncEmails(ctx.user.id);
       return result;
     }),
@@ -1629,7 +1966,7 @@ export const appRouter = router({
         matterId: z.number().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const { getValidAccessToken, sendGmailMessage, sendOutlookMessage } = await import("./emailService");
+        const { getValidAccessToken, sendGmailMessage, sendOutlookMessage } = await import("./services/emailService");
 
         const tokenData = await getValidAccessToken(ctx.user.id);
         if (!tokenData) {

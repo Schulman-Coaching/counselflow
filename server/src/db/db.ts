@@ -1,5 +1,6 @@
 import { eq, and, desc, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
 import {
   InsertUser,
   users,
@@ -21,6 +22,8 @@ import {
   emailIntegrations,
   emails,
   emailTemplates,
+  payments,
+  paymentReminders,
   InsertClient,
   InsertMatter,
   InsertIntakeForm,
@@ -36,16 +39,20 @@ import {
   InsertCalendarEvent,
   InsertEmailIntegration,
   InsertEmail,
-  InsertEmailTemplate
-} from "../drizzle/schema";
-import { ENV } from './_core/env';
+  InsertEmailTemplate,
+  InsertPayment,
+  InsertPaymentReminder
+} from "./schema";
+import { ENV } from '../_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _pool: mysql.Pool | null = null;
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      _pool = mysql.createPool(process.env.DATABASE_URL);
+      _db = drizzle(_pool);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -273,6 +280,18 @@ export async function getDocumentTemplateById(id: number) {
   if (!db) return undefined;
   const result = await db.select().from(documentTemplates).where(eq(documentTemplates.id, id)).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updateDocumentTemplate(id: number, updates: Partial<InsertDocumentTemplate>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(documentTemplates).set(updates).where(eq(documentTemplates.id, id));
+}
+
+export async function deleteDocumentTemplate(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(documentTemplates).where(eq(documentTemplates.id, id));
 }
 
 // ============ Document Functions ============
@@ -855,4 +874,127 @@ export async function deleteEmailTemplate(id: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(emailTemplates).where(eq(emailTemplates.id, id));
+}
+
+// ============ Payments ============
+
+export async function createPayment(data: InsertPayment) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(payments).values(data);
+  return result[0].insertId;
+}
+
+export async function getPaymentsByInvoiceId(invoiceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await db.select().from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(desc(payments.paymentDate));
+}
+
+export async function getPaymentsByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await db.select().from(payments).where(eq(payments.userId, userId)).orderBy(desc(payments.paymentDate));
+}
+
+export async function getPaymentById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(payments).where(eq(payments.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updatePayment(id: number, updates: Partial<InsertPayment>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(payments).set(updates).where(eq(payments.id, id));
+}
+
+export async function deletePayment(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(payments).where(eq(payments.id, id));
+}
+
+export async function getTotalPaymentsByInvoiceId(invoiceId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .select({ total: sql<number>`COALESCE(SUM(${payments.amount}), 0)` })
+    .from(payments)
+    .where(eq(payments.invoiceId, invoiceId));
+  return result[0]?.total || 0;
+}
+
+// ============ Payment Reminders ============
+
+export async function createPaymentReminder(data: InsertPaymentReminder) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(paymentReminders).values(data);
+  return result[0].insertId;
+}
+
+export async function getPaymentRemindersByInvoiceId(invoiceId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await db.select().from(paymentReminders).where(eq(paymentReminders.invoiceId, invoiceId)).orderBy(paymentReminders.reminderDate);
+}
+
+export async function getPendingPaymentReminders(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await db
+    .select()
+    .from(paymentReminders)
+    .where(
+      and(
+        eq(paymentReminders.userId, userId),
+        eq(paymentReminders.isSent, false)
+      )
+    )
+    .orderBy(paymentReminders.reminderDate);
+}
+
+export async function getDuePaymentReminders() {
+  const db = await getDb();
+  if (!db) return [];
+  return await db
+    .select()
+    .from(paymentReminders)
+    .where(
+      and(
+        eq(paymentReminders.isSent, false),
+        sql`${paymentReminders.reminderDate} <= NOW()`
+      )
+    )
+    .orderBy(paymentReminders.reminderDate);
+}
+
+export async function markReminderAsSent(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(paymentReminders).set({ isSent: true, sentAt: new Date() }).where(eq(paymentReminders.id, id));
+}
+
+export async function deletePaymentReminder(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(paymentReminders).where(eq(paymentReminders.id, id));
+}
+
+export async function getOverdueInvoices(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return await db
+    .select()
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.userId, userId),
+        eq(invoices.status, "sent"),
+        sql`${invoices.dueDate} < NOW()`
+      )
+    )
+    .orderBy(invoices.dueDate);
 }

@@ -83,6 +83,7 @@ describe("Activity Dashboard", () => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 7); // 7 days ago
     const endDate = new Date();
+    endDate.setMinutes(endDate.getMinutes() + 1); // Add 1 minute buffer for test timing
 
     // Get activities from last 7 days
     const activities = await caller.activity.getByDateRange({

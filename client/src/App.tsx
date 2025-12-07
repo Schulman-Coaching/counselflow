@@ -19,6 +19,7 @@ import Tasks from "./pages/Tasks";
 import MatterDetail from "./pages/MatterDetail";
 import Settings from "./pages/Settings";
 import Emails from "./pages/Emails";
+import Templates from "./pages/Templates";
 
 function Router() {
   return (
@@ -37,6 +38,7 @@ function Router() {
       <Route path="/client-portal" component={ClientPortal} />
       <Route path="/activity" component={Activity} />
       <Route path="/emails" component={Emails} />
+      <Route path="/templates" component={Templates} />
       <Route path="/settings" component={Settings} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />

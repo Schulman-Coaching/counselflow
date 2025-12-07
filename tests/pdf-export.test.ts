@@ -84,7 +84,8 @@ describe("PDF export functionality", () => {
     // Verify PDF was generated and uploaded
     expect(result).toHaveProperty("url");
     expect(result).toHaveProperty("fileName");
-    expect(result.url).toContain("https://");
+    // URL can be either S3 (https://) or local (/api/files/)
+    expect(result.url).toMatch(/^(https:\/\/|\/api\/files\/)/);
     expect(result.fileName).toMatch(/^invoice-INV-.*\.pdf$/);
     expect(result.fileName).toContain(invoice.invoiceNumber);
   }, 30000); // 30 second timeout for PDF generation

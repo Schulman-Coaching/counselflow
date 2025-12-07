@@ -3,7 +3,7 @@
  * Handles OAuth flow and calendar operations
  */
 
-import * as db from "./db";
+import * as db from "../db";
 
 // Google OAuth configuration - these would come from environment variables
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";

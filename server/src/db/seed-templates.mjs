@@ -1,7 +1,12 @@
+import { config } from 'dotenv';
 import { drizzle } from 'drizzle-orm/mysql2';
-import { documentTemplates } from './drizzle/schema.ts';
+import mysql from 'mysql2/promise';
+import { documentTemplates } from './schema.ts';
 
-const db = drizzle(process.env.DATABASE_URL);
+config(); // Load .env file
+
+const pool = mysql.createPool(process.env.DATABASE_URL);
+const db = drizzle(pool);
 
 const templates = [
   {
