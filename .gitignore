@@ -11,6 +11,8 @@ build/
 .env
 .env.local
 .env.*.local
+.env.production
+~/.counselflow-aws-credentials
 
 # IDE
 .vscode/
@@ -34,3 +36,4 @@ coverage/
 *.pem
 .cache/
 uploads/
+.vercel

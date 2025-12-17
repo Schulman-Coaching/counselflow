@@ -14,4 +14,8 @@ export const ENV = {
   s3AccessKeyId: process.env.S3_ACCESS_KEY_ID || "",
   s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
   appUrl: process.env.APP_URL || "http://localhost:5173",
+  // Ollama Configuration
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://localhost:11434",
+  ollamaModel: process.env.OLLAMA_MODEL || "llama3.2",
+  aiProvider: process.env.AI_PROVIDER || "ollama", // ollama, openai, ollama-only
 };

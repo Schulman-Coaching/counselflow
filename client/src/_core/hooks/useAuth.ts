@@ -22,7 +22,9 @@ export function useAuth() {
     // Check for existing session
     const checkAuth = async () => {
       try {
-        const response = await fetch('/api/auth/me');
+        const response = await fetch('/api/auth/me', {
+          credentials: 'include',
+        });
         if (response.ok) {
           const user = await response.json();
           setState({ user, loading: false });
@@ -39,7 +41,10 @@ export function useAuth() {
 
   const logout = useCallback(async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
       setState({ user: null, loading: false });
       window.location.href = '/';
     } catch (error) {

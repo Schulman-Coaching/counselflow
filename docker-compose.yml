@@ -1,0 +1,163 @@
+# CounselFlow Docker Compose Configuration
+# Use for local development and testing
+
+services:
+  # ============================================
+  # MySQL Database
+  # ============================================
+  db:
+    image: mysql:8.0
+    container_name: counselflow-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: counselflow
+      MYSQL_USER: counselflow
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-counselflow123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - counselflow-network
+
+  # ============================================
+  # Redis (Optional - for caching/sessions)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: counselflow-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - counselflow-network
+
+  # ============================================
+  # MinIO (S3-compatible local storage)
+  # ============================================
+  minio:
+    image: minio/minio:latest
+    container_name: counselflow-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - counselflow-network
+
+  # ============================================
+  # CounselFlow Backend
+  # ============================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: counselflow-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      DATABASE_URL: mysql://counselflow:${MYSQL_PASSWORD:-counselflow123}@db:3306/counselflow
+
+      # OAuth (set in .env file)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:5173/settings}
+
+      OUTLOOK_CLIENT_ID: ${OUTLOOK_CLIENT_ID}
+      OUTLOOK_CLIENT_SECRET: ${OUTLOOK_CLIENT_SECRET}
+      OUTLOOK_REDIRECT_URI: ${OUTLOOK_REDIRECT_URI:-http://localhost:5173/settings}
+
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # S3/MinIO
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET_NAME: counselflow-documents
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_FORCE_PATH_STYLE: "true"
+
+      # Application
+      APP_URL: ${APP_URL:-http://localhost:5173}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-in-production}
+    ports:
+      - "3002:3001"
+    volumes:
+      - ./uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - counselflow-network
+
+  # ============================================
+  # CounselFlow Frontend (Development)
+  # ============================================
+  frontend:
+    image: node:20-alpine
+    container_name: counselflow-frontend
+    working_dir: /app
+    depends_on:
+      - backend
+    environment:
+      VITE_API_URL: http://localhost:3001
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+    networks:
+      - counselflow-network
+    profiles:
+      - dev  # Only start with: docker-compose --profile dev up
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  counselflow-network:
+    driver: bridge

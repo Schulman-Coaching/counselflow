@@ -140,6 +140,13 @@ export async function getUserById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function createUser(user: InsertUser) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(users).values(user) as any;
+  return Number(result[0]?.insertId || result.insertId);
+}
+
 // ============ Client Functions ============
 
 export async function createClient(client: InsertClient) {
