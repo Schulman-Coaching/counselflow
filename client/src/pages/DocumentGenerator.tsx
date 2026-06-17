@@ -14,25 +14,44 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { FileText, Sparkles, Download, Eye } from "lucide-react";
-import { useState } from "react";
+import { FileText, Sparkles, Download, FileDown } from "lucide-react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Streamdown } from "streamdown";
+import { useSearch } from "wouter";
 
 export default function DocumentGenerator() {
-  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
+  const searchParams = useSearch();
+  const urlParams = new URLSearchParams(searchParams);
+  const templateIdFromUrl = urlParams.get("templateId");
+
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
+    templateIdFromUrl ? parseInt(templateIdFromUrl) : null
+  );
   const [selectedMatterId, setSelectedMatterId] = useState<string>("");
   const [variables, setVariables] = useState<Record<string, string>>({});
   const [generatedDocument, setGeneratedDocument] = useState<string>("");
+  const [generatedDocumentId, setGeneratedDocumentId] = useState<number | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const { data: templates, isLoading: templatesLoading } = trpc.templates.list.useQuery();
+
+  // Set template from URL parameter when templates load
+  useEffect(() => {
+    if (templateIdFromUrl && templates) {
+      const id = parseInt(templateIdFromUrl);
+      if (templates.some((t: any) => t.id === id)) {
+        setSelectedTemplateId(id);
+      }
+    }
+  }, [templateIdFromUrl, templates]);
   const { data: matters } = trpc.matters.list.useQuery();
   const utils = trpc.useUtils();
 
   const generateDocument = trpc.documents.generate.useMutation({
     onSuccess: (data) => {
       setGeneratedDocument(data.content);
+      setGeneratedDocumentId(data.id);
       toast.success("Document generated successfully!");
       utils.documents.list.invalidate();
       setIsGenerating(false);
@@ -40,6 +59,35 @@ export default function DocumentGenerator() {
     onError: (error) => {
       toast.error(`Failed to generate document: ${error.message}`);
       setIsGenerating(false);
+    },
+  });
+
+  const exportPdfMutation = trpc.documents.exportPDF.useMutation({
+    onSuccess: (data) => {
+      // Open the PDF URL in a new tab
+      if (data.url) {
+        window.open(data.url, "_blank");
+        toast.success("PDF exported successfully!");
+      }
+      setIsExporting(false);
+    },
+    onError: (error) => {
+      toast.error(`Failed to export PDF: ${error.message}`);
+      setIsExporting(false);
+    },
+  });
+
+  const exportDocxMutation = trpc.documents.exportDocx.useMutation({
+    onSuccess: (data) => {
+      if (data.url) {
+        window.open(data.url, "_blank");
+        toast.success("DOCX exported successfully!");
+      }
+      setIsExporting(false);
+    },
+    onError: (error) => {
+      toast.error(`Failed to export DOCX: ${error.message}`);
+      setIsExporting(false);
     },
   });
 
@@ -79,7 +127,21 @@ export default function DocumentGenerator() {
   };
 
   const handleDownloadPDF = () => {
-    toast.info("PDF export coming soon!");
+    if (!generatedDocumentId) {
+      toast.error("Please generate a document first");
+      return;
+    }
+    setIsExporting(true);
+    exportPdfMutation.mutate({ id: generatedDocumentId });
+  };
+
+  const handleDownloadDocx = () => {
+    if (!generatedDocumentId) {
+      toast.error("Please generate a document first");
+      return;
+    }
+    setIsExporting(true);
+    exportDocxMutation.mutate({ id: generatedDocumentId });
   };
 
   return (
@@ -268,9 +330,23 @@ export default function DocumentGenerator() {
                             <CardDescription>Review your generated document</CardDescription>
                           </div>
                           <div className="flex gap-2">
-                            <Button variant="outline" size="sm" onClick={handleDownloadPDF}>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleDownloadPDF}
+                              disabled={isExporting || !generatedDocumentId}
+                            >
                               <Download className="mr-2 h-4 w-4" />
-                              Export PDF
+                              {isExporting ? "Exporting..." : "Export PDF"}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleDownloadDocx}
+                              disabled={isExporting || !generatedDocumentId}
+                            >
+                              <FileDown className="mr-2 h-4 w-4" />
+                              Export DOCX
                             </Button>
                             <Button size="sm" onClick={handleSaveDocument}>
                               Save Document

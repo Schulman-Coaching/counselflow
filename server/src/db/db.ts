@@ -357,6 +357,43 @@ export async function getClauseById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+export async function updateClause(id: number, updates: Partial<InsertClause>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(clauses).set(updates).where(eq(clauses.id, id));
+}
+
+export async function deleteClause(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(clauses).where(eq(clauses.id, id));
+}
+
+export async function searchClauses(userId: number, query?: string, category?: string) {
+  const db = await getDb();
+  if (!db) return [];
+
+  let conditions = [eq(clauses.userId, userId)];
+
+  if (category) {
+    conditions.push(eq(clauses.category, category));
+  }
+
+  let results = await db.select().from(clauses).where(and(...conditions)).orderBy(desc(clauses.createdAt));
+
+  // Filter by search query if provided (search title, content, and tags)
+  if (query) {
+    const lowerQuery = query.toLowerCase();
+    results = results.filter(clause =>
+      clause.title.toLowerCase().includes(lowerQuery) ||
+      clause.content.toLowerCase().includes(lowerQuery) ||
+      (clause.tags && clause.tags.toLowerCase().includes(lowerQuery))
+    );
+  }
+
+  return results;
+}
+
 // ============ Time Entry Functions ============
 
 export async function createTimeEntry(entry: InsertTimeEntry) {

@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { RichTextEditor, isHtmlContent } from "@/components/ui/rich-text-editor";
 import {
   Select,
   SelectContent,
@@ -43,10 +44,15 @@ import {
   Eye,
   Search,
   Filter,
+  Sparkles,
+  Wand2,
+  Library,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { ClausePickerDialog } from "@/components/ClausePickerDialog";
+import type { Editor } from "@tiptap/react";
 
 const CATEGORIES = [
   "Estate Planning",
@@ -84,9 +90,11 @@ export default function Templates() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isPreviewDialogOpen, setIsPreviewDialogOpen] = useState(false);
+  const [isClausePickerOpen, setIsClausePickerOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<any>(null);
   const [previewTemplate, setPreviewTemplate] = useState<any>(null);
   const [formData, setFormData] = useState<TemplateFormData>(emptyFormData);
+  const editorRef = useRef<Editor | null>(null);
 
   const { data: templates, isLoading } = trpc.templates.list.useQuery();
   const utils = trpc.useUtils();
@@ -125,6 +133,50 @@ export default function Templates() {
       toast.error(`Failed to delete template: ${error.message}`);
     },
   });
+
+  const generateContentMutation = trpc.templates.generateContent.useMutation({
+    onSuccess: (data) => {
+      setFormData({ ...formData, templateContent: data.content });
+      toast.success("Template content generated with AI!");
+    },
+    onError: (error) => {
+      toast.error(`Failed to generate content: ${error.message}`);
+    },
+  });
+
+  const extractVariablesMutation = trpc.templates.extractVariables.useMutation({
+    onSuccess: (data) => {
+      setFormData({ ...formData, questionnaireSchema: data.schema });
+      toast.success(`Extracted ${data.variables.length} variables and generated schema`);
+    },
+    onError: (error) => {
+      toast.error(`Failed to extract variables: ${error.message}`);
+    },
+  });
+
+  const handleGenerateContent = () => {
+    if (!formData.category) {
+      toast.error("Please select a category first");
+      return;
+    }
+    if (!formData.description) {
+      toast.error("Please provide a description for the template");
+      return;
+    }
+    generateContentMutation.mutate({
+      description: formData.description,
+      category: formData.category,
+      state: formData.state || undefined,
+    });
+  };
+
+  const handleExtractVariables = () => {
+    if (!formData.templateContent || formData.templateContent.length < 20) {
+      toast.error("Please add more template content first");
+      return;
+    }
+    extractVariablesMutation.mutate({ content: formData.templateContent });
+  };
 
   const handleCreate = () => {
     if (!formData.name || !formData.category || !formData.templateContent) {
@@ -189,7 +241,20 @@ export default function Templates() {
   };
 
   const useTemplate = (template: any) => {
-    setLocation("/documents/generate");
+    setLocation(`/documents/generate?templateId=${template.id}`);
+  };
+
+  const handleInsertClause = (content: string) => {
+    if (editorRef.current) {
+      editorRef.current.chain().focus().insertContent(content).run();
+    } else {
+      // Fallback: append to template content
+      setFormData({
+        ...formData,
+        templateContent: formData.templateContent + "\n\n" + content,
+      });
+    }
+    toast.success("Clause inserted");
   };
 
   // Filter templates
@@ -264,27 +329,84 @@ export default function Templates() {
         </div>
       </div>
 
+      {/* AI Generate Button */}
+      <div className="flex items-center gap-2 p-3 bg-muted/50 rounded-lg border border-dashed">
+        <Sparkles className="h-5 w-5 text-primary" />
+        <div className="flex-1">
+          <p className="text-sm font-medium">Generate with AI</p>
+          <p className="text-xs text-muted-foreground">
+            Fill in the category and description, then click to generate template content
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={handleGenerateContent}
+          disabled={generateContentMutation.isPending}
+        >
+          {generateContentMutation.isPending ? (
+            <>Generating...</>
+          ) : (
+            <>
+              <Wand2 className="h-4 w-4 mr-1" />
+              Generate
+            </>
+          )}
+        </Button>
+      </div>
+
       <Tabs defaultValue="content" className="w-full">
         <TabsList>
           <TabsTrigger value="content">Template Content *</TabsTrigger>
           <TabsTrigger value="variables">Variable Schema</TabsTrigger>
         </TabsList>
         <TabsContent value="content" className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            Use {"{{variable_name}}"} syntax for placeholders
-          </p>
-          <Textarea
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Use {"{{variable_name}}"} syntax for placeholders. Format text using the toolbar.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsClausePickerOpen(true)}
+            >
+              <Library className="h-4 w-4 mr-1" />
+              Insert Clause
+            </Button>
+          </div>
+          <RichTextEditor
+            ref={editorRef}
             value={formData.templateContent}
-            onChange={(e) => setFormData({ ...formData, templateContent: e.target.value })}
+            onChange={(value) => setFormData({ ...formData, templateContent: value })}
             placeholder="Enter your template content with {{variables}}..."
-            rows={12}
-            className="font-mono text-sm"
+            minHeight="300px"
+            showVariableHelper={true}
           />
         </TabsContent>
         <TabsContent value="variables" className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            JSON schema defining the variables (optional). Example:
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              JSON schema defining the variables (optional).
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExtractVariables}
+              disabled={extractVariablesMutation.isPending}
+            >
+              {extractVariablesMutation.isPending ? (
+                <>Extracting...</>
+              ) : (
+                <>
+                  <Wand2 className="h-4 w-4 mr-1" />
+                  Extract from Content
+                </>
+              )}
+            </Button>
+          </div>
           <pre className="text-xs bg-muted p-2 rounded mb-2">
 {`{
   "client_name": { "type": "text", "label": "Client Name", "required": true },
@@ -531,9 +653,16 @@ export default function Templates() {
                 )}
               </div>
               <div className="bg-muted/30 p-6 rounded-lg">
-                <pre className="whitespace-pre-wrap font-mono text-sm">
-                  {previewTemplate?.templateContent}
-                </pre>
+                {isHtmlContent(previewTemplate?.templateContent || "") ? (
+                  <div
+                    className="prose prose-sm dark:prose-invert max-w-none"
+                    dangerouslySetInnerHTML={{ __html: previewTemplate?.templateContent || "" }}
+                  />
+                ) : (
+                  <pre className="whitespace-pre-wrap font-mono text-sm">
+                    {previewTemplate?.templateContent}
+                  </pre>
+                )}
               </div>
               {previewTemplate?.questionnaireSchema && (
                 <div>
@@ -546,6 +675,13 @@ export default function Templates() {
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* Clause Picker Dialog */}
+        <ClausePickerDialog
+          open={isClausePickerOpen}
+          onOpenChange={setIsClausePickerOpen}
+          onSelect={handleInsertClause}
+        />
       </div>
     </DashboardLayout>
   );

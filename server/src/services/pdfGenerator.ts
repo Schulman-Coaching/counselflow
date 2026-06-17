@@ -470,8 +470,19 @@ function generateDocumentHTML(data: DocumentData): string {
     });
   };
 
-  // Convert markdown-style content to basic HTML
+  // Check if content is already HTML (from rich text editor)
+  const isHtmlContent = (content: string) => {
+    return /<[^>]+>/.test(content);
+  };
+
+  // Convert markdown-style content to basic HTML, or pass through if already HTML
   const formatContent = (content: string) => {
+    // If content is already HTML (from rich text editor), use it directly
+    if (isHtmlContent(content)) {
+      return content;
+    }
+
+    // Otherwise, convert markdown-style content to HTML
     return content
       // Headers
       .replace(/^### (.+)$/gm, '<h3>$1</h3>')

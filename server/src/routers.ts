@@ -620,6 +620,159 @@ export const appRouter = router({
 
         return { url, fileName };
       }),
+
+    exportDocx: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = await import("docx");
+        const { storagePut } = await import("./storage");
+
+        // Get document with related data
+        const document = await db.getDocumentById(input.id);
+        if (!document) {
+          throw new Error("Document not found");
+        }
+
+        // Get matter and client info if available
+        let matterTitle: string | undefined;
+        let clientName: string | undefined;
+
+        if (document.matterId) {
+          const matter = await db.getMatterById(document.matterId);
+          if (matter) {
+            matterTitle = matter.title;
+            const client = await db.getClientById(matter.clientId);
+            if (client) {
+              clientName = client.name;
+            }
+          }
+        }
+
+        // Convert HTML content to plain text paragraphs
+        const content = document.content || "";
+        const isHtml = /<[^>]+>/.test(content);
+
+        // Helper to strip HTML and get paragraphs
+        const getParagraphs = (html: string): string[] => {
+          // Remove script and style tags
+          let text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+          text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+          // Replace common block elements with newlines
+          text = text.replace(/<\/(p|div|h[1-6]|li|br)>/gi, "\n");
+          text = text.replace(/<br\s*\/?>/gi, "\n");
+          // Remove remaining tags
+          text = text.replace(/<[^>]+>/g, "");
+          // Decode HTML entities
+          text = text.replace(/&nbsp;/g, " ");
+          text = text.replace(/&amp;/g, "&");
+          text = text.replace(/&lt;/g, "<");
+          text = text.replace(/&gt;/g, ">");
+          text = text.replace(/&quot;/g, '"');
+          // Split into paragraphs
+          return text.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+        };
+
+        const paragraphs = isHtml ? getParagraphs(content) : content.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+        // Build the DOCX document
+        const docChildren: Paragraph[] = [
+          // Title
+          new Paragraph({
+            children: [new TextRun({ text: document.title, bold: true, size: 32 })],
+            heading: HeadingLevel.TITLE,
+            alignment: AlignmentType.CENTER,
+          }),
+          // Metadata
+          new Paragraph({
+            children: [
+              new TextRun({ text: `Status: ${document.status?.toUpperCase() || "DRAFT"} | Version: ${document.version || 1}`, size: 20 }),
+            ],
+            alignment: AlignmentType.CENTER,
+          }),
+          new Paragraph({ text: "" }), // Spacer
+        ];
+
+        // Add matter/client info if available
+        if (matterTitle || clientName) {
+          docChildren.push(
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Matter: ", bold: true }),
+                new TextRun({ text: matterTitle || "N/A" }),
+              ],
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Client: ", bold: true }),
+                new TextRun({ text: clientName || "N/A" }),
+              ],
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Prepared by: ", bold: true }),
+                new TextRun({ text: ctx.user.name || "Attorney" }),
+              ],
+            }),
+            new Paragraph({ text: "" }), // Spacer
+          );
+        }
+
+        // Add content paragraphs
+        for (const para of paragraphs) {
+          docChildren.push(
+            new Paragraph({
+              children: [new TextRun({ text: para })],
+            })
+          );
+        }
+
+        // Add signature block
+        docChildren.push(
+          new Paragraph({ text: "" }),
+          new Paragraph({ text: "" }),
+          new Paragraph({
+            children: [new TextRun({ text: "_________________________" })],
+          }),
+          new Paragraph({
+            children: [new TextRun({ text: "Signature" })],
+          }),
+          new Paragraph({ text: "" }),
+          new Paragraph({
+            children: [new TextRun({ text: "_________________________" })],
+          }),
+          new Paragraph({
+            children: [new TextRun({ text: "Date" })],
+          })
+        );
+
+        const doc = new Document({
+          sections: [{
+            properties: {},
+            children: docChildren,
+          }],
+        });
+
+        // Generate DOCX buffer
+        const docxBuffer = await Packer.toBuffer(doc);
+
+        // Upload to storage
+        const fileName = `document-${document.title.replace(/[^a-zA-Z0-9]/g, '_')}-${Date.now()}.docx`;
+        const { url } = await storagePut(
+          `documents/${ctx.user.id}/${fileName}`,
+          Buffer.from(docxBuffer),
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+
+        await db.logActivity({
+          userId: ctx.user.id,
+          entityType: "document",
+          entityId: document.id,
+          action: "exported_docx",
+          details: JSON.stringify({ fileName, url }),
+        });
+
+        return { url, fileName };
+      }),
   }),
 
   // ============ Document Templates ============
@@ -705,6 +858,156 @@ export const appRouter = router({
 
         return { success: true };
       }),
+
+    // AI-powered template generation
+    generateContent: protectedProcedure
+      .input(z.object({
+        description: z.string(),
+        category: z.string(),
+        state: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const stateContext = input.state
+          ? `This template should comply with ${input.state} state laws and regulations.`
+          : "Use general legal principles applicable across jurisdictions.";
+
+        const aiResponse = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content: `You are a legal document drafting expert. Generate a professional legal document template based on the description provided.
+
+Requirements:
+- Use {{variable_name}} syntax for placeholders (e.g., {{client_name}}, {{date}}, {{address}})
+- Include appropriate legal language and formatting
+- Structure the document with clear sections
+- Include signature blocks where appropriate
+- ${stateContext}
+
+Return ONLY the template content, no explanations.`,
+            },
+            {
+              role: "user",
+              content: `Category: ${input.category}\nDescription: ${input.description}`,
+            },
+          ],
+        });
+
+        const content = aiResponse?.choices?.[0]?.message?.content || "";
+        return { content };
+      }),
+
+    // Extract variables from template content
+    extractVariables: protectedProcedure
+      .input(z.object({ content: z.string() }))
+      .mutation(async ({ input }) => {
+        // First, extract variables using regex
+        const variableRegex = /\{\{([^}]+)\}\}/g;
+        const matches = [...input.content.matchAll(variableRegex)];
+        const variables = [...new Set(matches.map(m => m[1].trim()))];
+
+        if (variables.length === 0) {
+          return { schema: "{}", variables: [] };
+        }
+
+        // Use AI to generate proper schema with labels and types
+        const aiResponse = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content: `You are a legal document assistant. Given a list of variable names from a legal template, generate a JSON schema that defines form fields for each variable.
+
+For each variable, determine:
+- type: "text", "textarea", "date", "number", or "select"
+- label: A human-readable label
+- required: true or false
+- options: (only for select type) array of option strings
+
+Return ONLY valid JSON, no explanation. Example format:
+{
+  "client_name": { "type": "text", "label": "Client Full Name", "required": true },
+  "effective_date": { "type": "date", "label": "Effective Date", "required": true }
+}`,
+            },
+            {
+              role: "user",
+              content: `Variables found: ${variables.join(", ")}`,
+            },
+          ],
+        });
+
+        let schema = "{}";
+        try {
+          const content = aiResponse?.choices?.[0]?.message?.content || "{}";
+          // Try to parse and re-stringify to validate JSON
+          JSON.parse(content);
+          schema = content;
+        } catch {
+          // If AI response isn't valid JSON, generate basic schema
+          const basicSchema: Record<string, any> = {};
+          for (const v of variables) {
+            basicSchema[v] = {
+              type: "text",
+              label: v.split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "),
+              required: true,
+            };
+          }
+          schema = JSON.stringify(basicSchema, null, 2);
+        }
+
+        return { schema, variables };
+      }),
+
+    // Suggest improvements for a template
+    suggestImprovements: protectedProcedure
+      .input(z.object({ templateId: z.number() }))
+      .query(async ({ input }) => {
+        const template = await db.getDocumentTemplateById(input.templateId);
+        if (!template) {
+          throw new Error("Template not found");
+        }
+
+        const aiResponse = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content: `You are a legal document expert. Analyze the provided legal template and suggest specific improvements.
+
+Focus on:
+1. Legal clarity and precision
+2. Missing standard clauses for this type of document
+3. Potential ambiguities that could cause disputes
+4. Missing variables that should be customizable
+5. Formatting and structure improvements
+
+Provide 3-5 specific, actionable suggestions. Format as a JSON array:
+[
+  { "title": "Short title", "description": "Detailed explanation", "priority": "high|medium|low" }
+]`,
+            },
+            {
+              role: "user",
+              content: `Template Name: ${template.name}\nCategory: ${template.category}\n\nContent:\n${template.templateContent}`,
+            },
+          ],
+        });
+
+        let suggestions: any[] = [];
+        try {
+          const content = aiResponse?.choices?.[0]?.message?.content || "[]";
+          suggestions = JSON.parse(content);
+        } catch {
+          suggestions = [
+            {
+              title: "Review template manually",
+              description: "AI analysis unavailable. Please review the template for legal accuracy and completeness.",
+              priority: "medium",
+            },
+          ];
+        }
+
+        return { suggestions, templateName: template.name };
+      }),
   }),
 
   // ============ Clause Library ============
@@ -728,8 +1031,56 @@ export const appRouter = router({
           category: input.category,
           tags: input.tags,
         });
-        
+
         return { id: clauseId };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        title: z.string().optional(),
+        content: z.string().optional(),
+        category: z.string().optional(),
+        tags: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const clause = await db.getClauseById(input.id);
+        if (!clause || clause.userId !== ctx.user.id) {
+          throw new Error("Clause not found or access denied");
+        }
+        const { id, ...updates } = input;
+        await db.updateClause(id, updates);
+        return { success: true };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const clause = await db.getClauseById(input.id);
+        if (!clause || clause.userId !== ctx.user.id) {
+          throw new Error("Clause not found or access denied");
+        }
+        await db.deleteClause(input.id);
+        return { success: true };
+      }),
+
+    search: protectedProcedure
+      .input(z.object({
+        query: z.string().optional(),
+        category: z.string().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        return await db.searchClauses(ctx.user.id, input.query, input.category);
+      }),
+
+    get: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const clause = await db.getClauseById(input.id);
+        if (!clause || clause.userId !== ctx.user.id) {
+          throw new Error("Clause not found or access denied");
+        }
+        return clause;
       }),
   }),
 
